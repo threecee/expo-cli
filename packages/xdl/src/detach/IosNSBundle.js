@@ -287,6 +287,17 @@ async function _configureInfoPlistAsync(context: StandaloneContext) {
       },
     ];
 
+    // Background modes
+    if (config.UIBackgroundModes) {
+      if (!Array.isArray(config.UIBackgroundModes)) {
+        throw new Error('UIBackgroundModes must be an array.');
+      }
+      infoPlist.UIBackgroundModes = config.UIBackgroundModes;
+    } else {
+      // Standalone apps by default don't have any background modes.
+      delete infoPlist['UIBackgroundModes'];
+    }
+
     // add or remove other facebook config
     if (config.facebookAppId) {
       infoPlist.FacebookAppID = config.facebookAppId;
