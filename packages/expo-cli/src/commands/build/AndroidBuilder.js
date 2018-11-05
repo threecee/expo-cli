@@ -12,6 +12,9 @@ import log from '../../log';
 import BaseBuilder from './BaseBuilder';
 import prompt from '../../prompt';
 
+const isAutoManaged = process.env.EXPO_MANAGE_ANDROID_KEYSTORE
+if(isAutoManaged) { log.warn('Expo is auto managing keystore') }
+
 export default class AndroidBuilder extends BaseBuilder {
   async run(options) {
     const buildOptions = options.publicUrl ? { publicUrl: options.publicUrl } : {};
@@ -163,7 +166,7 @@ export default class AndroidBuilder extends BaseBuilder {
         },
       ];
 
-      const answers = await prompt(questions);
+      const answers = isAutoManaged ? { uploadKeystore: false } : await prompt(questions);
 
       if (!answers.uploadKeystore) {
         if (this.options.clearCredentials && credentialsExist) {
