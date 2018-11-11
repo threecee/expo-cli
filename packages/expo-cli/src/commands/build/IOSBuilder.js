@@ -165,7 +165,7 @@ export default class IOSBuilder extends BaseBuilder {
       throw new XDLError(
         ErrorCode.INVALID_OPTIONS,
         `Your project must have a bundleIdentifier set in app.json.
-See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
+See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`
       );
     }
 
@@ -274,7 +274,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
         const certPassword = distCertValues.p12Password;
         const distCertSerialNumber = IosCodeSigning.findP12CertSerialNumber(
           certP12Buffer,
-          certPassword,
+          certPassword
         );
         return {
           metadata: distCertSerialNumber,
@@ -327,7 +327,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
     let checkAppExistenceAttempt = await authFuncs.ensureAppIdLocally(
       appleCreds,
       credsMetadata,
-      teamId,
+      teamId
     );
     if (
       checkAppExistenceAttempt.result === 'failure' &&
@@ -336,7 +336,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
       checkAppExistenceAttempt = await authFuncs.createAppOnPortal(
         appleCreds,
         credsMetadata,
-        teamId,
+        teamId
       );
     }
     this._throwIfFailureWithReasonDump(checkAppExistenceAttempt);
@@ -349,7 +349,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
       appleCreds,
       credsMetadata,
       teamId,
-      isEnterprise,
+      isEnterprise
     );
     if (
       produceProvisionProfileAttempt.result === 'failure' &&
@@ -368,7 +368,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
         this._throwIfFailureWithReasonDump(produceCertAttempt);
         const distCertSerialNumber = IosCodeSigning.findP12CertSerialNumber(
           produceCertAttempt.certP12,
-          produceCertAttempt.certPassword,
+          produceCertAttempt.certPassword
         );
         return {
           metadata: {
@@ -382,7 +382,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
           appleCreds,
           credsMetadata,
           teamId,
-          isEnterprise,
+          isEnterprise
         );
         this._throwIfFailureWithReasonDump(producePushCertsAttempt);
         return {
@@ -397,7 +397,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
             appleCreds,
             credsMetadata,
             teamId,
-            isEnterprise,
+            isEnterprise
           ),
         };
       default:
@@ -412,14 +412,14 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
       credsMetadata,
       teamId,
       distOrPush,
-      isEnterprise,
+      isEnterprise
     );
     if (revokeWhat.length !== 0) {
       const revokeAttempt = await authFuncs.revokeCredentialsOnApple(
         appleCredentials,
         credsMetadata,
         revokeWhat,
-        teamId,
+        teamId
       );
       if (revokeAttempt.result === 'success') {
         log(`Revoked ${revokeAttempt.revokeCount} existing certs on developer.apple.com`);
@@ -444,20 +444,22 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
     if (this.options.revokeAppleProvisioningProfile) {
       await new Promise(r => setTimeout(() => r(), 400));
       log.warn(
-        `ATTENTION: Revoking your Apple Provisioning Profile for ${credsMetadata.bundleIdentifier} is permanent`,
+        `ATTENTION: Revoking your Apple Provisioning Profile for ${
+          credsMetadata.bundleIdentifier
+        } is permanent`
       );
       const revokeAttempt = await authFuncs.revokeProvisioningProfile(
         appleCredentials,
         credsMetadata,
-        teamId,
+        teamId
       );
       if (revokeAttempt.result === 'success') {
         log.warn(revokeAttempt.msg);
       } else {
         log.warn(
           `Could not revoke provisioning profile: ${revokeAttempt.reason} rawDump:${JSON.stringify(
-            revokeAttempt,
-          )}`,
+            revokeAttempt
+          )}`
         );
       }
     }
@@ -472,7 +474,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
       appleCredentials,
       credsMetadata,
       checkCredsAttempt.teamId,
-      isEnterprise,
+      isEnterprise
     );
     await this._ensureAppExists(appleCredentials, credsMetadata, checkCredsAttempt.teamId);
     return {
@@ -489,7 +491,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
     teamId,
     credsMetadata,
     isEnterprise,
-    credsMissing = ['distCert', 'pushCert', 'provisioningProfile'],
+    credsMissing = ['distCert', 'pushCert', 'provisioningProfile']
   ) {
     // (dsokal)
     // This function and generally - IOSBuilder is unnecessarily overcomplicated.
@@ -505,7 +507,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
     }
 
     const whatToOverrideFiltered = whatToOverride.filter(({ name }) =>
-      _.includes(credsMissing, name),
+      _.includes(credsMissing, name)
     );
     const whatToOverrideResult = isAutoManaged ? {
       distCert: true,
@@ -545,7 +547,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
             appleCredentials,
             teamId,
             newMetadata,
-            isEnterprise,
+            isEnterprise
           );
           newMetadata = { ...newMetadata, ...metadata };
           newCredentials = { ...newCredentials, ...credentials };
@@ -641,7 +643,9 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
       const creds = { ...credsStarter, ...credentialsCI };
       this._areCredsMissing(creds);
       await Credentials.updateCredentialsForPlatform('ios', creds, credsMetadata);
-      log.warn(`Encrypted ${Object.keys(OBLIGATORY_CREDS_KEYS).join(', ')} and saved to expo servers`);
+      log.warn(
+        `Encrypted ${Object.keys(OBLIGATORY_CREDS_KEYS).join(', ')} and saved to expo servers`
+      );
     } else if (clientHasAllNeededCreds === false) {
       const strategy = isAutoManaged ? { isExpoManaged: true } : await prompt(runAsExpertQuestion);
       const isEnterprise = this.options.appleEnterpriseAccount !== undefined;
@@ -649,7 +653,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
       const { appleCredentials, team } = await this._validateCredsEnsureAppExists(
         credsMetadata,
         !strategy.isExpoManaged,
-        isEnterprise,
+        isEnterprise
       );
       credsStarter = { ...credsStarter, ...team };
       if (strategy.isExpoManaged) {
@@ -658,7 +662,7 @@ See https://docs.expo.io/versions/latest/guides/building-standalone-apps.html`,
           credsStarter.teamId,
           credsMetadata,
           isEnterprise,
-          credsMissing,
+          credsMissing
         );
         credsStarter = { ...credsStarter, ...newCredentials };
         credsMetadata = { ...credsMetadata, ...newMetadata };
