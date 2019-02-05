@@ -2,10 +2,11 @@
 import path from 'path';
 import escapeStringRegexp from 'escape-string-regexp';
 import chalk from 'chalk';
+import getenv from 'getenv';
+import { trim } from 'lodash';
 
 import * as ProjectUtils from '../project/ProjectUtils';
 import Logger from '../Logger';
-import { trim } from 'lodash';
 import { isNode } from '../tools/EnvironmentHelper';
 
 type ChunkT =
@@ -208,7 +209,7 @@ export default class PackagerLogsStream {
     let { msg } = chunk;
 
     if (typeof msg === 'string') {
-      if (msg.includes('HTTP/1.1') && process.env.EXPO_DEBUG !== 'true') {
+      if (msg.includes('HTTP/1.1') && !getenv.boolish('EXPO_DEBUG', false)) {
         // Do nothing with this message - we want to filter out network requests logged by Metro.
       } else {
         // If Metro crashes for some reason, it may log an error message as a plain string to stderr.
@@ -255,17 +256,29 @@ export default class PackagerLogsStream {
       case 'hmr_client_error':
         chunk.msg = `A WebSocket client got a connection error. Please reload your device to get HMR working again.`;
         break;
+      case 'global_cache_disabled':
+        if (msg.reason === 'too_many_errors') {
+          chunk.msg =
+            'The global cache is now disabled because it has been failing too many times.';
+        } else if (msg.reason === 'too_many_misses') {
+          chunk.msg = `The global cache is now disabled because it has been missing too many consecutive keys.`;
+        } else {
+          chunk.msg = `The global cache is now disabled. Reason: ${msg.reason}`;
+        }
+        break;
+      case 'worker_stdout_chunk':
+        chunk.msg = this._formatWorkerChunk('stdout', msg.chunk);
+        break;
+      case 'worker_stderr_chunk':
+        chunk.msg = this._formatWorkerChunk('stderr', msg.chunk);
+        break;
       // Ignored events.
       case 'dep_graph_loading':
       case 'dep_graph_loaded':
-      case 'global_cache_disabled':
       case 'global_cache_error':
-      case 'worker_stdout_chunk':
-      case 'worker_stderr_chunk':
         return;
       default:
-        chunk.msg = `Unrecognized event: ${msg.type}`;
-        chunk.level = Logger.DEBUG;
+        chunk.msg = `Unrecognized event: ${JSON.stringify(msg)}`;
         break;
     }
     this._enqueueAppendLogChunk(chunk);
@@ -286,14 +299,14 @@ export default class PackagerLogsStream {
     } else if (msg.type === 'bundle_build_failed') {
       chunk._metroEventType = 'BUILD_FAILED';
       if (!this._bundleBuildChunkID) {
-        return; // maybe?
+        // maybe?
       } else {
         this._handleUpdateBundleTransformProgress(chunk);
       }
     } else if (msg.type === 'bundle_build_done') {
       chunk._metroEventType = 'BUILD_DONE';
       if (!this._bundleBuildChunkID) {
-        return; // maybe?
+        // maybe?
       } else {
         this._handleUpdateBundleTransformProgress(chunk);
       }
@@ -447,10 +460,16 @@ export default class PackagerLogsStream {
     return message;
   }
 
+  _formatWorkerChunk(origin: 'stdout' | 'stderr', chunk: string) {
+    const lines = chunk.split('\n');
+    if (lines.length >= 1 && lines[lines.length - 1] === '') {
+      lines.splice(lines.length - 1, 1);
+    }
+    return lines.map(line => `transform[${origin}]: ${line}`).join('\n');
+  }
+
   _enqueueAppendLogChunk(chunk: ChunkT) {
-    if (chunk.shouldHide) {
-      return;
-    } else {
+    if (!chunk.shouldHide) {
       this._logsToAdd.push(chunk);
       this._enqueueFlushLogsToAdd();
     }

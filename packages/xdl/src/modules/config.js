@@ -49,6 +49,41 @@ const expoSdkUniversalModules = [
     sdkVersions: '>=30.0.0',
   },
   {
+    podName: 'EXAdsFacebook',
+    libName: 'expo-ads-facebook',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXAmplitude',
+    libName: 'expo-analytics-amplitude',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXSegment',
+    libName: 'expo-analytics-segment',
+    sdkVersions: '>=30.0.0',
+  },
+  {
+    podName: 'EXAppAuth',
+    libName: 'expo-app-auth',
+    sdkVersions: '>=32.0.0',
+  },
+  {
+    podName: 'EXAppLoaderProvider',
+    libName: 'expo-app-loader-provider',
+    sdkVersions: '>=32.0.0',
+  },
+  {
+    podName: 'EXAV',
+    libName: 'expo-av',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXBackgroundFetch',
+    libName: 'expo-background-fetch',
+    sdkVersions: '>=32.0.0',
+  },
+  {
     podName: 'EXBarCodeScanner',
     libName: 'expo-barcode-scanner',
     sdkVersions: '>=30.0.0',
@@ -57,6 +92,21 @@ const expoSdkUniversalModules = [
     podName: 'EXBarCodeScannerInterface',
     libName: 'expo-barcode-scanner-interface',
     sdkVersions: '>=30.0.0',
+  },
+  {
+    podName: 'EXBlur',
+    libName: 'expo-blur',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXBrightness',
+    libName: 'expo-brightness',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXCalendar',
+    libName: 'expo-calendar',
+    sdkVersions: '>=33.0.0',
   },
   {
     podName: 'EXCamera',
@@ -89,6 +139,21 @@ const expoSdkUniversalModules = [
     sdkVersions: '>=29.0.0',
   },
   {
+    podName: 'EXDocumentPicker',
+    libName: 'expo-document-picker',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXErrors',
+    libName: 'expo-errors',
+    sdkVersions: '>=32.0.0',
+  },
+  {
+    podName: 'EXFacebook',
+    libName: 'expo-facebook',
+    sdkVersions: '>=33.0.0',
+  },
+  {
     podName: 'EXFaceDetector',
     libName: 'expo-face-detector',
     detachable: false,
@@ -98,6 +163,11 @@ const expoSdkUniversalModules = [
     podName: 'EXFaceDetectorInterface',
     libName: 'expo-face-detector-interface',
     sdkVersions: '>=29.0.0',
+  },
+  {
+    podName: 'EXFacebook',
+    libName: 'expo-facebook',
+    sdkVersions: '>=33.0.0',
   },
   {
     podName: 'EXFileSystem',
@@ -226,9 +296,34 @@ const expoSdkUniversalModules = [
     },
   },
   {
+    podName: 'EXGoogleSignIn',
+    libName: 'expo-google-sign-in',
+    sdkVersions: '>=32.0.0',
+  },
+  {
     podName: 'EXImageLoaderInterface',
     libName: 'expo-image-loader-interface',
     sdkVersions: '>=30.0.0',
+  },
+  {
+    podName: 'EXImageManipulator',
+    libName: 'expo-image-manipulator',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXImagePicker',
+    libName: 'expo-image-picker',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXKeepAwake',
+    libName: 'expo-keep-awake',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXLinearGradient',
+    libName: 'expo-linear-gradient',
+    sdkVersions: '>=33.0.0',
   },
   {
     podName: 'EXLocalAuthentication',
@@ -246,6 +341,11 @@ const expoSdkUniversalModules = [
     sdkVersions: '>=30.0.0',
   },
   {
+    podName: 'EXMailComposer',
+    libName: 'expo-mail-composer',
+    sdkVersions: '>=33.0.0',
+  },
+  {
     podName: 'EXMediaLibrary',
     libName: 'expo-media-library',
     sdkVersions: '>=30.0.0',
@@ -254,6 +354,7 @@ const expoSdkUniversalModules = [
     podName: 'EXPaymentsStripe',
     libName: 'expo-payments-stripe',
     sdkVersions: '>=30.0.0',
+    detachable: false,
     config: {
       ios: {
         includeInExpoClient: false,
@@ -281,9 +382,9 @@ const expoSdkUniversalModules = [
     sdkVersions: '>=29.0.0',
   },
   {
-    podName: 'EXSegment',
-    libName: 'expo-analytics-segment',
-    sdkVersions: '>=30.0.0',
+    podName: 'EXSecureStore',
+    libName: 'expo-secure-store',
+    sdkVersions: '>=33.0.0',
   },
   {
     podName: 'EXSensors',
@@ -299,6 +400,36 @@ const expoSdkUniversalModules = [
     podName: 'EXSMS',
     libName: 'expo-sms',
     sdkVersions: '>=29.0.0',
+  },
+  {
+    podName: 'EXSpeech',
+    libName: 'expo-speech',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXSQLite',
+    libName: 'expo-sqlite',
+    sdkVersions: '>=33.0.0',
+  },
+  {
+    podName: 'EXTaskManager',
+    libName: 'expo-task-manager',
+    sdkVersions: '>=32.0.0',
+  },
+  {
+    podName: 'EXTaskManagerInterface',
+    libName: 'expo-task-manager-interface',
+    sdkVersions: '>=32.0.0',
+    config: {
+      android: {
+        versionable: false,
+      },
+    },
+  },
+  {
+    podName: 'EXWebBrowser',
+    libName: 'expo-web-browser',
+    sdkVersions: '>=33.0.0',
   },
 
   // JS-only modules

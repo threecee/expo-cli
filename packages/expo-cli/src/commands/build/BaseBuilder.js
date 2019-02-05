@@ -2,14 +2,16 @@
  * @flow
  */
 
-import { Project, ProjectUtils, Versions } from 'xdl';
+import { Project, ProjectUtils } from 'xdl';
 import chalk from 'chalk';
 import fp from 'lodash/fp';
 import simpleSpinner from '@expo/simple-spinner';
 
+import * as UrlUtils from '../utils/url';
 import log from '../../log';
 import { action as publishAction } from '../publish';
 import BuildError from './BuildError';
+import prompt from '../../prompt';
 
 const sleep = ms => new Promise(res => setTimeout(res, ms));
 const secondsToMilliseconds = seconds => seconds * 1000;
@@ -24,6 +26,14 @@ type BuilderOptions = {
   distP12Path?: string,
   pushP12Path?: string,
   provisioningProfilePath?: string,
+};
+
+type StatusArgs = {
+  platform: string,
+  current?: boolean,
+  publicUrl?: string,
+  releaseChannel?: string,
+  sdkVersion?: string,
 };
 
 export default class BaseBuilder {
@@ -63,12 +73,22 @@ export default class BaseBuilder {
     }
   }
 
-  async checkStatus({
-    platform = 'all',
-    current = true,
-    publicUrl,
-    sdkVersion,
-  }: { platform: string, current: boolean, publicUrl?: string } = {}): Promise<void> {
+  async checkForBuildInProgress({ platform, publicUrl, sdkVersion }: StatusArgs = {}) {
+    log('Checking if there is build in progress...\n');
+    const buildStatus = await Project.buildAsync(this.projectDir, {
+      mode: 'status',
+      platform,
+      current: true,
+      releaseChannel: this.options.releaseChannel,
+      ...(publicUrl ? { publicUrl } : {}),
+      sdkVersion,
+    });
+    if (buildStatus.jobs && buildStatus.jobs.length) {
+      throw new BuildError('Cannot start a new build, as there is already an in-progress build.');
+    }
+  }
+
+  async checkStatus({ platform = 'all', publicUrl, sdkVersion }: StatusArgs = {}): Promise<void> {
     await this._checkProjectConfig();
 
     log('Checking if current build exists...\n');
@@ -76,7 +96,8 @@ export default class BaseBuilder {
     const buildStatus = await Project.buildAsync(this.projectDir, {
       mode: 'status',
       platform,
-      current,
+      current: false,
+      releaseChannel: this.options.releaseChannel,
       ...(publicUrl ? { publicUrl } : {}),
       sdkVersion,
     });
@@ -86,16 +107,55 @@ export default class BaseBuilder {
     }
 
     if (!(buildStatus.jobs && buildStatus.jobs.length)) {
-      if (current && buildStatus.userHasBuiltAppBefore) {
-        log.warn(`Did you know that Expo provides over-the-air updates?
-Please see the docs (${chalk.underline(
-          'https://docs.expo.io/versions/latest/guides/configuring-ota-updates'
-        )}) and check if you can use them instead of building your app binaries again.`);
-      }
       log('No currently active or previous builds for this project.');
       return;
     }
 
+    this.logBuildStatuses(buildStatus);
+  }
+
+  async checkStatusBeforeBuild({ platform, sdkVersion }: StatusArgs = {}): Promise<void> {
+    await this._checkProjectConfig();
+    log('Checking if this build already exists...\n');
+
+    const { exp } = await ProjectUtils.readConfigJsonAsync(this.projectDir);
+    const reuseStatus = await Project.findReusableBuildAsync(
+      this.options.releaseChannel,
+      platform,
+      sdkVersion,
+      exp.slug
+    );
+    if (reuseStatus.canReuse) {
+      const { downloadUrl } = reuseStatus;
+
+      log.warn(`Did you know that Expo provides over-the-air updates?
+Please see the docs (${chalk.underline(
+        'https://docs.expo.io/versions/latest/guides/configuring-ota-updates'
+      )}) and check if you can use them instead of building your app binaries again.`);
+
+      log.warn(
+        `There were no new changes from the last build, you can download that build from here: ${chalk.underline(
+          reuseStatus.downloadUrl
+        )}`
+      );
+
+      let questions = [
+        {
+          type: 'confirm',
+          name: 'confirm',
+          message: 'Do you want to build app anyway?',
+        },
+      ];
+
+      const answers = await prompt(questions);
+      if (!answers.confirm) {
+        log('Stopping the build process');
+        process.exit(0);
+      }
+    }
+  }
+
+  logBuildStatuses(buildStatus: { jobs: Array<Object> }) {
     log.raw();
     log('=================');
     log(' Builds Statuses ');
@@ -110,14 +170,14 @@ Please see the docs (${chalk.underline(
         packageExtension = 'APK';
       }
 
-      log(`### ${i} | ${platform} | ${constructBuildLogsUrl(job.id)} ###`);
+      log(`### ${i} | ${platform} | ${UrlUtils.constructBuildLogsUrl(job.id)} ###`);
 
       let status;
       switch (job.status) {
         case 'pending':
         case 'sent-to-queue':
           status = `Build waiting in queue...
-You can check the queue length at ${chalk.underline(constructTurtleStatusUrl())}`;
+You can check the queue length at ${chalk.underline(UrlUtils.constructTurtleStatusUrl())}`;
           break;
         case 'started':
           status = 'Build started...';
@@ -154,20 +214,14 @@ ${job.id}
       }
       log();
     });
-
-    throw new BuildError('Cannot start new build, as there is a build in progress.');
   }
 
   async ensureReleaseExists(platform: string) {
-    if (this.options.hardcodeRevisionId) {
-      // Used for sandbox build
-      return [this.options.hardcodeRevisionId];
-    }
-
     if (this.options.publish) {
       const { ids, url, err } = await publishAction(this.projectDir, {
         ...this.options,
         platform,
+        duringBuild: true,
       });
       if (err) {
         throw new BuildError(`No url was returned from publish. Please try again.\n${err}`);
@@ -185,9 +239,8 @@ ${job.id}
         throw new BuildError('No releases found. Please create one using `exp publish` first.');
       }
       log(
-        `Using existing release on channel "${release.channel}":\n  publicationId: ${
-          release.publicationId
-        }\n  publishedTime: ${release.publishedTime}`
+        `Using existing release on channel "${release.channel}":\n` +
+          `publicationId: ${release.publicationId}\n  publishedTime: ${release.publishedTime}`
       );
       return [release.publicationId];
     }
@@ -259,11 +312,19 @@ ${job.id}
     log('Build started, it may take a few minutes to complete.');
 
     if (buildId) {
-      log(`You can check the queue length at\n ${chalk.underline(constructTurtleStatusUrl())}\n`);
+      log(
+        `You can check the queue length at\n ${chalk.underline(
+          UrlUtils.constructTurtleStatusUrl()
+        )}\n`
+      );
     }
 
     if (buildId) {
-      log(`You can monitor the build at\n\n ${chalk.underline(constructBuildLogsUrl(buildId))}\n`);
+      log(
+        `You can monitor the build at\n\n ${chalk.underline(
+          UrlUtils.constructBuildLogsUrl(buildId)
+        )}\n`
+      );
     }
 
     if (this.options.wait) {
@@ -272,7 +333,7 @@ ${job.id}
       const completedJob = await this.wait(buildId, waitOpts);
       simpleSpinner.stop();
       const artifactUrl = completedJob.artifactId
-        ? constructArtifactUrl(completedJob.artifactId)
+        ? UrlUtils.constructArtifactUrl(completedJob.artifactId)
         : completedJob.artifacts.url;
       log(`${chalk.green('Successfully built standalone app:')} ${chalk.underline(artifactUrl)}`);
     } else {
@@ -280,37 +341,16 @@ ${job.id}
     }
   }
 
-  async checkIfSdkIsSupported(sdkVersion: string, platform: string) {
+  async checkIfSdkIsSupported(sdkVersion, platform) {
     const isSupported = await Versions.canTurtleBuildSdkVersion(sdkVersion, platform);
     if (!isSupported) {
       const storeName = platform === 'ios' ? 'Apple App Store' : 'Google Play Store';
       log.error(
         chalk.red(
-          `Unsupported SDK version: our app builders don't have support for ${sdkVersion} version yet. Submitting the app to the ${storeName} may result in an unexpected behaviour`
+          `Unsupported SDK version: our app builders don't have support for ${sdkVersion} version ` +
+            `yet. Submitting the app to the ${storeName} may result in an unexpected behaviour`
         )
       );
     }
-  }
-}
-
-function constructBuildLogsUrl(buildId: string): string {
-  return `${getExpoDomainUrl()}/builds/${buildId}`;
-}
-
-function constructTurtleStatusUrl(): string {
-  return `${getExpoDomainUrl()}/turtle-status`;
-}
-
-function constructArtifactUrl(artifactId: string): string {
-  return `${getExpoDomainUrl()}/artifacts/${artifactId}`;
-}
-
-function getExpoDomainUrl() {
-  if (process.env.EXPO_STAGING) {
-    return `https://staging.expo.io`;
-  } else if (process.env.EXPO_LOCAL) {
-    return `http://expo.test`;
-  } else {
-    return `https://expo.io`;
   }
 }

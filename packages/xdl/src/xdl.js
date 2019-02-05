@@ -42,9 +42,6 @@ module.exports = {
   get Detach() {
     return require('./detach/Detach');
   },
-  get Diagnostics() {
-    return require('./Diagnostics');
-  },
   get Doctor() {
     return require('./project/Doctor');
   },
@@ -75,8 +72,8 @@ module.exports = {
   get ImageUtils() {
     return require('./tools/ImageUtils');
   },
-  get Intercom() {
-    return require('./Intercom');
+  get StandaloneBuild() {
+    return require('./StandaloneBuild');
   },
   get IosIcons() {
     return require('./detach/IosIcons');
@@ -155,11 +152,5 @@ module.exports = {
   },
   get XDLError() {
     return require('./XDLError').default;
-  },
-  get XDLProvider() {
-    return require('./state/XDLProvider').default;
-  },
-  get XDLState() {
-    return require('./state');
   },
 };

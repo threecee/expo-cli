@@ -2,16 +2,20 @@
  * @flow
  */
 
+import fs from 'fs';
+import path from 'path';
+import url from 'url';
+
 import ProgressBar from 'progress';
-import _ from 'lodash';
+import last from 'lodash/last';
+import compact from 'lodash/compact';
+import findLastIndex from 'lodash/findLastIndex';
 import bunyan from '@expo/bunyan';
 import chalk from 'chalk';
 import glob from 'glob';
-import fs from 'fs';
-import path from 'path';
+import ora from 'ora';
 import simpleSpinner from '@expo/simple-spinner';
-import url from 'url';
-
+import getenv from 'getenv';
 import program, { Command } from 'commander';
 import {
   Analytics,
@@ -32,10 +36,6 @@ import update from './update';
 import urlOpts from './urlOpts';
 import addCommonOptions from './commonOptions';
 import packageJSON from '../package.json';
-
-if (process.env.NODE_ENV === 'development') {
-  require('source-map-support').install();
-}
 
 // The following prototyped functions are not used here, but within in each file found in `./commands`
 // Extending commander to easily add more options to certain command line arguments
@@ -61,7 +61,7 @@ Command.prototype.asyncAction = function(asyncFn, skipUpdateCheck) {
     }
 
     try {
-      let options = _.last(args);
+      let options = last(args);
       if (options.output === 'raw') {
         log.config.raw = true;
       }
@@ -84,7 +84,7 @@ Command.prototype.asyncAction = function(asyncFn, skipUpdateCheck) {
       } else {
         log.error(err.message);
         // TODO: Is there a better way to do this? EXPO_DEBUG needs to be set to view the stack trace
-        if (process.env.EXPO_DEBUG) {
+        if (getenv.boolish('EXPO_DEBUG', false)) {
           log.error(chalk.gray(err.stack));
         } else {
           log.error(chalk.grey('Set EXPO_DEBUG=true in your env to view the stack trace.'));
@@ -150,8 +150,8 @@ Command.prototype.asyncActionProjectDir = function(asyncFn, skipProjectValidatio
         return line.startsWith('node_modules');
       };
 
-      let stackFrames = _.compact(stack.split('\n'));
-      let lastAppCodeFrameIndex = _.findLastIndex(stackFrames, line => {
+      let stackFrames = compact(stack.split('\n'));
+      let lastAppCodeFrameIndex = findLastIndex(stackFrames, line => {
         return !isLibraryFrame(line);
       });
       let lastFrameIndexToLog = Math.min(
@@ -278,16 +278,16 @@ Command.prototype.asyncActionProjectDir = function(asyncFn, skipProjectValidatio
     // to rerun Doctor because the directory was already checked previously
     // This is relevant for command such as `send`
     if (!skipProjectValidation && (await Project.currentStatus(projectDir)) !== 'running') {
-      log('Making sure project is set up correctly...');
-      simpleSpinner.start();
+      let spinner = ora('Making sure project is set up correctly...').start();
+      log.setSpinner(spinner);
       // validate that this is a good projectDir before we try anything else
 
       let status = await Doctor.validateLowLatencyAsync(projectDir);
       if (status === Doctor.FATAL) {
         throw new Error(`There is an error with your project. See above logs for information.`);
       }
-      simpleSpinner.stop();
-      log('Your project looks good!');
+      spinner.stop();
+      log.setSpinner(null);
     }
 
     // the existing CLI modules only pass one argument to this function, so skipProjectValidation
@@ -329,29 +329,20 @@ function runAsync(programName) {
       );
 
     // Load each module found in ./commands by 'registering' it with our commander instance
-    glob
-      .sync('commands/*.js', { cwd: __dirname })
-      .sort()
-      .forEach(file => {
-        const commandModule = require(`./${file}`);
-        if (typeof commandModule === 'function') {
-          commandModule(program);
-        } else if (typeof commandModule.default === 'function') {
-          commandModule.default(program);
-        } else {
-          log.error(`'${file}.js' is not a properly formatted command.`);
-        }
-      });
-
-    if (process.env.EXPO_DEBUG) {
-      glob
-        .sync('debug_commands/*.js', {
-          cwd: __dirname,
-        })
-        .forEach(file => {
-          require(`./${file}`)(program);
-        });
-    }
+    const commandFiles = [].concat(
+      glob.sync('commands/*.js', { cwd: __dirname }),
+      glob.sync('commands/*/index.js', { cwd: __dirname })
+    );
+    commandFiles.sort().forEach(file => {
+      const commandModule = require(`./${file}`);
+      if (typeof commandModule === 'function') {
+        commandModule(program);
+      } else if (typeof commandModule.default === 'function') {
+        commandModule.default(program);
+      } else {
+        log.error(`'${file}.js' is not a properly formatted command.`);
+      }
+    });
 
     let subCommand = process.argv[2];
     let argv = process.argv.filter(arg => {
@@ -385,7 +376,7 @@ function runAsync(programName) {
           commands.push(alias);
         }
       });
-      if (!_.includes(commands, subCommand)) {
+      if (!commands.includes(subCommand)) {
         console.log(
           `"${subCommand}" is not an ${programName} command. See "${programName} --help" for the full list of commands.`
         );

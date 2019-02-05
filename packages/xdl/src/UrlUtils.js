@@ -6,7 +6,6 @@ import joi from 'joi';
 import os from 'os';
 import path from 'path';
 import url from 'url';
-import promisify from 'util.promisify';
 import validator from 'validator';
 
 import ip from './ip';
@@ -17,8 +16,6 @@ import * as ProjectSettings from './ProjectSettings';
 import * as ProjectUtils from './project/ProjectUtils';
 import * as Versions from './Versions';
 import XDLError from './XDLError';
-
-const joiValidateAsync = promisify(joi.validate);
 
 export async function constructBundleUrlAsync(
   projectRoot: string,
@@ -136,14 +133,8 @@ export async function constructBundleQueryParamsAsync(projectRoot: string, opts:
 
   let { exp, pkg } = await ProjectUtils.readConfigJsonAsync(projectRoot);
 
-  // Be backwards compatible for users who haven't migrated from `exponent`
-  // to the `expo` sdk package.
-  let sdkPkg = pkg.dependencies['expo'] ? 'expo' : 'exponent';
   // Use an absolute path here so that we can not worry about symlinks/relative requires
-  let nodeModulesPath = exp.nodeModulesPath
-    ? path.join(path.resolve(projectRoot, exp.nodeModulesPath), 'node_modules')
-    : path.join(projectRoot, 'node_modules');
-  let pluginModule = path.join(nodeModulesPath, sdkPkg, 'tools', 'hashAssetFiles');
+  let pluginModule = ProjectUtils.resolveModule('expo/tools/hashAssetFiles', projectRoot, exp);
   queryParams += `&assetPlugin=${encodeURIComponent(pluginModule)}`;
 
   // Only sdk-10.1.0+ supports the assetPlugin parameter. We use only the
@@ -163,17 +154,6 @@ export async function constructUrlAsync(
   requestHostname?: string
 ) {
   if (opts) {
-    // the randomness is only important if we're online and can build a tunnel
-    let urlRandomnessSchema;
-    if (Config.offline) {
-      urlRandomnessSchema = joi
-        .string()
-        .optional()
-        .allow(null);
-    } else {
-      urlRandomnessSchema = joi.string();
-    }
-
     let schema = joi.object().keys({
       urlType: joi.any().valid('exp', 'http', 'redirect', 'no-protocol'),
       lanType: joi.any().valid('ip', 'hostname'),
@@ -181,13 +161,15 @@ export async function constructUrlAsync(
       dev: joi.boolean(),
       strict: joi.boolean(),
       minify: joi.boolean(),
-      urlRandomness: urlRandomnessSchema,
+      urlRandomness: joi
+        .string()
+        .optional()
+        .allow(null),
     });
 
-    try {
-      await joiValidateAsync(opts, schema);
-    } catch (e) {
-      throw new XDLError(ErrorCode.INVALID_OPTIONS, e.toString());
+    const { error } = joi.validate(opts, schema);
+    if (error) {
+      throw new XDLError(ErrorCode.INVALID_OPTIONS, error.toString());
     }
   }
 

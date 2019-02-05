@@ -5,7 +5,7 @@
 import chalk from 'chalk';
 import simpleSpinner from '@expo/simple-spinner';
 
-import { Project } from 'xdl';
+import { Exp, Project } from 'xdl';
 
 import log from '../log';
 import sendTo from '../sendTo';
@@ -16,6 +16,7 @@ type Options = {
   sendTo?: string,
   quiet?: boolean,
   releaseChannel?: string,
+  duringBuild?: boolean,
 };
 
 export async function action(projectDir: string, options: Options = {}) {
@@ -45,32 +46,58 @@ export async function action(projectDir: string, options: Options = {}) {
   let recipient = await sendTo.getRecipient(options.sendTo);
   log(`Publishing to channel '${options.releaseChannel}'...`);
 
+  const {
+    args: { sdkVersion },
+  } = await Exp.getPublishInfoAsync(projectDir);
+
+  const buildStatus = await Project.buildAsync(projectDir, {
+    mode: 'status',
+    platform: 'all',
+    current: true,
+    releaseChannel: options.releaseChannel,
+    sdkVersion,
+  });
+
+  if (
+    buildStatus.userHasBuiltExperienceBefore &&
+    !buildStatus.userHasBuiltAppBefore &&
+    !options.duringBuild
+  ) {
+    log.warn(
+      'We noticed you did not build a standalone app with this SDK version and release channel before. ' +
+        'Remember that OTA updates will not work with the app built with different SDK version and/or release channel. ' +
+        'Read more: https://docs.expo.io/versions/latest/guides/publishing.html#limitations'
+    );
+  }
+
   if (options.quiet) {
     simpleSpinner.start();
   }
 
-  let result = await Project.publishAsync(projectDir, {
-    releaseChannel: options.releaseChannel,
-  });
+  let result;
+  try {
+    result = await Project.publishAsync(projectDir, {
+      releaseChannel: options.releaseChannel,
+    });
 
-  let url = result.url;
+    let url = result.url;
 
-  if (options.quiet) {
-    simpleSpinner.stop();
+    if (options.quiet) {
+      simpleSpinner.stop();
+    }
+
+    log('Published');
+    log('Your URL is\n\n' + chalk.underline(url) + '\n');
+    log.raw(url);
+
+    if (recipient) {
+      await sendTo.sendUrlAsync(url, recipient);
+    }
+  } finally {
+    if (startedOurOwn) {
+      await Project.stopAsync(projectDir);
+    }
   }
-
-  log('Published');
-  log('Your URL is\n\n' + chalk.underline(url) + '\n');
-  log.raw(url);
-
-  if (recipient) {
-    await sendTo.sendUrlAsync(url, recipient);
-  }
-
-  if (startedOurOwn) {
-    await Project.stopAsync(projectDir);
-  }
-
   return result;
 }
 

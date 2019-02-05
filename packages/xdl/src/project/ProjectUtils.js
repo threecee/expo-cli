@@ -5,6 +5,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import JsonFile from '@expo/json-file';
+import resolveFrom from 'resolve-from';
 import slug from 'slugify';
 
 import * as Analytics from '../Analytics';
@@ -37,8 +38,6 @@ export function logWithLevel(
   msg: string,
   id: ?string
 ) {
-  let useRedux = id && Config.useReduxNotifications;
-
   if (id) {
     object.issueId = id;
   }
@@ -52,22 +51,14 @@ export function logWithLevel(
       logger.info(object, msg);
       break;
     case 'warn':
-      if (!useRedux) {
-        logger.warn(object, msg);
-      }
+      logger.warn(object, msg);
       break;
     case 'error':
-      if (!useRedux) {
-        logger.error(object, msg);
-      }
+      logger.error(object, msg);
       break;
     default:
       logger.debug(object, msg);
       break;
-  }
-
-  if (useRedux && (level === 'warn' || level === 'error')) {
-    state.store.dispatch(state.actions.notifications.add(projectRoot, id, msg, projectRoot, level));
   }
 }
 
@@ -76,27 +67,19 @@ export function logDebug(projectRoot: string, tag: string, message: string, id: 
 }
 
 export function logInfo(projectRoot: string, tag: string, message: string, id: ?string) {
-  if (id && Config.useReduxNotifications) {
-    state.store.dispatch(state.actions.notifications.add(projectRoot, id, message, tag, 'info'));
-  } else {
-    const object = { tag };
-    if (id) {
-      object.issueId = id;
-    }
-    _getLogger(projectRoot).info(object, message.toString());
+  const object = { tag };
+  if (id) {
+    object.issueId = id;
   }
+  _getLogger(projectRoot).info(object, message.toString());
 }
 
 export function logError(projectRoot: string, tag: string, message: string, id: ?string) {
-  if (id && Config.useReduxNotifications) {
-    state.store.dispatch(state.actions.notifications.add(projectRoot, id, message, tag, 'error'));
-  } else {
-    const object = { tag };
-    if (id) {
-      object.issueId = id;
-    }
-    _getLogger(projectRoot).error(object, message.toString());
+  const object = { tag };
+  if (id) {
+    object.issueId = id;
   }
+  _getLogger(projectRoot).error(object, message.toString());
 
   let truncatedMessage = message.toString();
   if (truncatedMessage.length > MAX_MESSAGE_LENGTH) {
@@ -111,15 +94,11 @@ export function logError(projectRoot: string, tag: string, message: string, id: 
 }
 
 export function logWarning(projectRoot: string, tag: string, message: string, id: ?string) {
-  if (id && Config.useReduxNotifications) {
-    state.store.dispatch(state.actions.notifications.add(projectRoot, id, message, tag, 'warn'));
-  } else {
-    const object = { tag };
-    if (id) {
-      object.issueId = id;
-    }
-    _getLogger(projectRoot).warn(object, message.toString());
+  const object = { tag };
+  if (id) {
+    object.issueId = id;
   }
+  _getLogger(projectRoot).warn(object, message.toString());
 
   let truncatedMessage = message.toString();
   if (truncatedMessage.length > MAX_MESSAGE_LENGTH) {
@@ -133,18 +112,14 @@ export function logWarning(projectRoot: string, tag: string, message: string, id
 }
 
 export function clearNotification(projectRoot: string, id: string) {
-  if (Config.useReduxNotifications) {
-    state.store.dispatch(state.actions.notifications.clear(projectRoot, id));
-  } else {
-    _getLogger(projectRoot).info(
-      {
-        tag: 'expo',
-        issueCleared: true,
-        issueId: id,
-      },
-      `No issue with ${id}`
-    );
-  }
+  _getLogger(projectRoot).info(
+    {
+      tag: 'expo',
+      issueCleared: true,
+      issueId: id,
+    },
+    `No issue with ${id}`
+  );
 }
 
 export function attachLoggerStream(projectRoot: string, stream: any) {
@@ -159,6 +134,11 @@ export async function fileExistsAsync(file: string): Promise<boolean> {
   }
 }
 
+export function resolveModule(request, projectRoot, exp) {
+  const fromDir = exp.nodeModulesPath ? exp.nodeModulesPath : projectRoot;
+  return resolveFrom(fromDir, request);
+}
+
 async function _findConfigPathAsync(projectRoot) {
   const appJson = path.join(projectRoot, 'app.json');
   const expJson = path.join(projectRoot, 'exp.json');
@@ -171,6 +151,8 @@ async function _findConfigPathAsync(projectRoot) {
   }
 }
 
+let hasWarnedAboutExpJson = false;
+
 export async function findConfigFileAsync(
   projectRoot: string
 ): Promise<{ configPath: string, configName: string, configNamespace: ?string }> {
@@ -182,6 +164,23 @@ export async function findConfigFileAsync(
   }
   const configName = path.basename(configPath);
   const configNamespace = configName !== 'exp.json' ? 'expo' : null;
+
+  if (configName === 'exp.json' && !hasWarnedAboutExpJson) {
+    hasWarnedAboutExpJson = true;
+    logWarning(
+      projectRoot,
+      'expo',
+      `Warning: configuration using exp.json is deprecated.
+Please move your configuration from exp.json to app.json.
+Example app.json:
+{
+  "expo": {
+    (JSON contents from exp.json)
+  }
+}`
+    );
+  }
+
   return { configPath, configName, configNamespace };
 }
 
@@ -260,7 +259,7 @@ export async function readConfigJsonAsync(
   // Grab our exp config from package.json (legacy) or exp.json
   if (!exp && pkg.exp) {
     exp = pkg.exp;
-    logError(projectRoot, 'expo', `Error: Move your "exp" config from package.json to exp.json.`);
+    logError(projectRoot, 'expo', `Error: Move your "exp" config from package.json to app.json.`);
   } else if (!exp && !pkg.exp) {
     logError(projectRoot, 'expo', `Error: Missing ${configName}. See https://docs.expo.io/`);
     return { exp: null, pkg: null };
@@ -280,6 +279,10 @@ export async function readConfigJsonAsync(
 
   if (exp && !exp.version) {
     exp.version = pkg.version;
+  }
+
+  if (exp.nodeModulesPath) {
+    exp.nodeModulesPath = path.resolve(projectRoot, exp.nodeModulesPath);
   }
 
   return { exp, pkg, rootConfig };

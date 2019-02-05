@@ -1,6 +1,7 @@
 /**
  * @flow
  */
+import axios from 'axios';
 import child_process from 'child_process';
 import crypto from 'crypto';
 import delayAsync from 'delay-async';
@@ -10,6 +11,7 @@ import freeportAsync from 'freeport-async';
 import fs from 'fs-extra';
 import HashIds from 'hashids';
 import joi from 'joi';
+import JsonFile from '@expo/json-file';
 import promisify from 'util.promisify';
 import chunk from 'lodash/chunk';
 import escapeRegExp from 'lodash/escapeRegExp';
@@ -21,8 +23,7 @@ import minimatch from 'minimatch';
 import ngrok from '@expo/ngrok';
 import os from 'os';
 import path from 'path';
-import Request from 'request-promise-native';
-import spawnAsync from '@expo/spawn-async';
+import semver from 'semver';
 import split from 'split';
 import treekill from 'tree-kill';
 import md5hex from 'md5hex';
@@ -34,6 +35,7 @@ import readLastLines from 'read-last-lines';
 import * as Analytics from './Analytics';
 import * as Android from './Android';
 import Api from './Api';
+import ApiV2 from './ApiV2';
 import Config from './Config';
 import * as Doctor from './project/Doctor';
 import * as DevSession from './DevSession';
@@ -63,16 +65,10 @@ import type { User as ExpUser } from './User'; //eslint-disable-line
 const EXPO_CDN = 'https://d1wp6m56sqw74a.cloudfront.net';
 const MINIMUM_BUNDLE_SIZE = 500;
 const TUNNEL_TIMEOUT = 10 * 1000;
-const WAIT_FOR_PACKAGER_TIMEOUT = 30 * 1000;
 
-const joiValidateAsync = promisify(joi.validate);
 const treekillAsync = promisify(treekill);
 const ngrokConnectAsync = promisify(ngrok.connect);
 const ngrokKillAsync = promisify(ngrok.kill);
-
-const request = Request.defaults({
-  resolveWithFullResponse: true,
-});
 
 type CachedSignedManifest = {
   manifestString: ?string,
@@ -124,43 +120,54 @@ async function _getForPlatformAsync(projectRoot, url, platform, { errorCode, min
   url = UrlUtils.getPlatformSpecificBundleUrl(url, platform);
 
   let fullUrl = `${url}&platform=${platform}`;
-  let response = await request.get({
-    url: fullUrl,
-    headers: {
-      'Exponent-Platform': platform,
-    },
-  });
+  let response;
 
-  if (response.statusCode !== 200) {
-    if (response.body) {
-      let body;
-      try {
-        body = JSON.parse(response.body);
-      } catch (e) {
-        ProjectUtils.logError(projectRoot, 'expo', response.body);
-      }
+  try {
+    response = await axios.get(fullUrl, {
+      responseType: 'text',
+      // Workaround for https://github.com/axios/axios/issues/907.
+      // Without transformResponse, axios will parse the body as JSON regardless of the responseType/
+      transformResponse: [data => data],
+      proxy: false,
+      validateStatus: status => status === 200,
+      headers: {
+        'Exponent-Platform': platform,
+      },
+    });
+  } catch (error) {
+    if (error.response) {
+      if (error.response.data) {
+        let body;
+        try {
+          body = JSON.parse(error.response.data);
+        } catch (e) {
+          ProjectUtils.logError(projectRoot, 'expo', response.data);
+        }
 
-      if (body !== undefined) {
-        if (body.message) {
-          ProjectUtils.logError(projectRoot, 'expo', body.message);
-        } else {
-          ProjectUtils.logError(projectRoot, 'expo', response.body);
+        if (body) {
+          if (body.message) {
+            ProjectUtils.logError(projectRoot, 'expo', body.message);
+          } else {
+            ProjectUtils.logError(projectRoot, 'expo', response.data);
+          }
         }
       }
+      throw new XDLError(
+        errorCode,
+        `Packager URL ${fullUrl} returned unexpected code ${response.status}. ` +
+          'Please open your project in the Expo app and see if there are any errors. ' +
+          'Also scroll up and make sure there were no errors or warnings when opening your project.'
+      );
+    } else {
+      throw error;
     }
-    throw new XDLError(
-      errorCode,
-      `Packager URL ${fullUrl} returned unexpected code ${response.statusCode}. ` +
-        'Please open your project in the Expo app and see if there are any errors. ' +
-        'Also scroll up and make sure there were no errors or warnings when opening your project.'
-    );
   }
 
-  if (!response.body || (minLength && response.body.length < minLength)) {
-    throw new XDLError(errorCode, `Body is: ${response.body}`);
+  if (!response.data || (minLength && response.data.length < minLength)) {
+    throw new XDLError(errorCode, `Body is: ${response.data}`);
   }
 
-  return response.body;
+  return response.data;
 }
 
 async function _resolveGoogleServicesFile(projectRoot, manifest) {
@@ -229,27 +236,14 @@ async function _resolveManifestAssets(projectRoot, manifest, resolver, strict = 
   }
 }
 
-function _requireFromProject(modulePath, projectRoot) {
+function _requireFromProject(modulePath, projectRoot, exp) {
   try {
-    if (modulePath.indexOf('.') === 0) {
-      let fullPath = path.resolve(projectRoot, modulePath);
-
-      // Clear the require cache for this module so get a fresh version of it
-      // without requiring the user to restart XDE
-      decache(fullPath);
-
-      // $FlowIssue: doesn't work with dynamic requires
-      return require(fullPath);
-    } else {
-      let fullPath = path.resolve(projectRoot, 'node_modules', modulePath);
-
-      // Clear the require cache for this module so get a fresh version of it
-      // without requiring the user to restart XDE
-      decache(fullPath);
-
-      // $FlowIssue: doesn't work with dynamic requires
-      return require(fullPath);
-    }
+    let fullPath = ProjectUtils.resolveModule(modulePath, projectRoot, exp);
+    // Clear the require cache for this module so get a fresh version of it
+    // without requiring the user to restart Expo CLI
+    decache(fullPath);
+    // $FlowIssue: doesn't work with dynamic requires
+    return require(fullPath);
   } catch (e) {
     return null;
   }
@@ -301,6 +295,98 @@ export async function getLatestReleaseAsync(
   } else {
     return null;
   }
+}
+
+// Takes multiple exported apps in sourceDirs and coalesces them to one app in outputDir
+export async function mergeAppDistributions(
+  projectRoot: string,
+  sourceDirs: Array<string>,
+  outputDir: string
+) {
+  const assetPathToWrite = path.resolve(projectRoot, outputDir, 'assets');
+  await fs.ensureDir(assetPathToWrite);
+  const bundlesPathToWrite = path.resolve(projectRoot, outputDir, 'bundles');
+  await fs.ensureDir(bundlesPathToWrite);
+
+  // merge files from bundles and assets
+  const androidIndexes = [];
+  const iosIndexes = [];
+
+  for (let sourceDir of sourceDirs) {
+    const promises = [];
+
+    // copy over assets/bundles from other src dirs to the output dir
+    if (sourceDir !== outputDir) {
+      // copy file over to assetPath
+      const sourceAssetDir = path.resolve(projectRoot, sourceDir, 'assets');
+      const outputAssetDir = path.resolve(projectRoot, outputDir, 'assets');
+      const assetPromise = fs.copy(sourceAssetDir, outputAssetDir);
+      promises.push(assetPromise);
+
+      // copy files over to bundlePath
+      const sourceBundleDir = path.resolve(projectRoot, sourceDir, 'bundles');
+      const outputBundleDir = path.resolve(projectRoot, outputDir, 'bundles');
+      const bundlePromise = fs.copy(sourceBundleDir, outputBundleDir);
+      promises.push(bundlePromise);
+
+      await Promise.all(promises);
+    }
+
+    // put index.jsons into memory
+    const putJsonInMemory = async (indexPath, accumulator) => {
+      const index = await JsonFile.readAsync(indexPath);
+      if (!index.sdkVersion) {
+        throw new XDLError(
+          ErrorCode.INVALID_MANIFEST,
+          `Invalid index.json, must specify an sdkVersion at ${indexPath}`
+        );
+      }
+      if (Array.isArray(index)) {
+        // index.json could also be an array
+        accumulator.push(...index);
+      } else {
+        accumulator.push(index);
+      }
+    };
+
+    const androidIndexPath = path.resolve(projectRoot, sourceDir, 'android-index.json');
+    await putJsonInMemory(androidIndexPath, androidIndexes);
+
+    const iosIndexPath = path.resolve(projectRoot, sourceDir, 'ios-index.json');
+    await putJsonInMemory(iosIndexPath, iosIndexes);
+  }
+
+  // sort indexes by descending sdk value
+  const getSortedIndex = indexes => {
+    return indexes.sort((index1, index2) => {
+      if (semver.eq(index1.sdkVersion, index2.sdkVersion)) {
+        logger.global.error(
+          `Encountered multiple index.json with the same SDK version ${
+            index1.sdkVersion
+          }. This could result in undefined behavior.`
+        );
+      }
+      return semver.gte(index1.sdkVersion, index2.sdkVersion) ? -1 : 1;
+    });
+  };
+
+  const sortedAndroidIndexes = getSortedIndex(androidIndexes);
+  const sortedIosIndexes = getSortedIndex(iosIndexes);
+
+  // Save the json arrays to disk
+  await _writeArtifactSafelyAsync(
+    projectRoot,
+    null,
+    path.join(outputDir, 'android-index.json'),
+    JSON.stringify(sortedAndroidIndexes)
+  );
+
+  await _writeArtifactSafelyAsync(
+    projectRoot,
+    null,
+    path.join(outputDir, 'ios-index.json'),
+    JSON.stringify(sortedIosIndexes)
+  );
 }
 
 /**
@@ -398,8 +484,11 @@ export async function exportForAppHosting(
       'Must provide a slug field in the app.json manifest.'
     );
   }
-  const user = await UserManager.ensureLoggedInAsync();
-  exp.id = `@${user.username}/${exp.slug}`;
+  let username = await UserManager.getCurrentUsernameAsync();
+  if (!username) {
+    username = ANONYMOUS_USERNAME;
+  }
+  exp.id = `@${username}/${exp.slug}`;
 
   // save the android manifest
   exp.bundleUrl = urljoin(publicUrl, 'bundles', androidBundleUrl);
@@ -498,6 +587,24 @@ async function _saveAssetAsync(projectRoot, assets, outputDir) {
   logger.global.info('Files successfully saved.');
 }
 
+export async function findReusableBuildAsync(
+  releaseChannel: string,
+  platform: string,
+  sdkVersion: string,
+  slug: string
+): Promise<{ downloadUrl?: string, canReuse: boolean }> {
+  const user = await UserManager.getCurrentUserAsync();
+
+  const buildReuseStatus = await ApiV2.clientForUser(user).postAsync('standalone-build/reuse', {
+    releaseChannel: releaseChannel,
+    platform: platform,
+    sdkVersion: sdkVersion,
+    slug: slug,
+  });
+
+  return buildReuseStatus;
+}
+
 export async function publishAsync(
   projectRoot: string,
   options: Object = {}
@@ -527,9 +634,11 @@ export async function publishAsync(
   if (hooks && hooks.postPublish) {
     hooks.postPublish.forEach(hook => {
       let { file, config } = hook;
-      let fn = _requireFromProject(file, projectRoot);
-      if (fn === null) {
-        logger.global.error(`Unable to load postPublishHook: '${file}'`);
+      let fn = _requireFromProject(file, projectRoot, exp);
+      if (typeof fn !== 'function') {
+        logger.global.error(
+          `Unable to load postPublishHook: '${file}'. The module does not export a function.`
+        );
       } else {
         hook._fn = fn;
         validPostPublishHooks.push(hook);
@@ -757,12 +866,11 @@ async function _getPublishExpConfigAsync(projectRoot, options) {
   });
 
   // Validate schema
-  try {
-    await joiValidateAsync(options, schema);
-    options.releaseChannel = options.releaseChannel || 'default'; // joi default not enforcing this :/
-  } catch (e) {
-    throw new XDLError(ErrorCode.INVALID_OPTIONS, e.toString());
+  const { error } = joi.validate(options, schema);
+  if (error) {
+    throw new XDLError(ErrorCode.INVALID_OPTIONS, error.toString());
   }
+  options.releaseChannel = options.releaseChannel || 'default'; // joi default not enforcing this :/
 
   // Verify that exp/app.json and package.json exist
   let { exp, pkg } = await ProjectUtils.readConfigJsonAsync(projectRoot);
@@ -1189,10 +1297,9 @@ export async function buildAsync(
     sdkVersion: joi.strict(),
   });
 
-  try {
-    await joiValidateAsync(options, schema);
-  } catch (e) {
-    throw new XDLError(ErrorCode.INVALID_OPTIONS, e.toString());
+  const { error } = joi.validate(options, schema);
+  if (error) {
+    throw new XDLError(ErrorCode.INVALID_OPTIONS, error.toString());
   }
 
   const { exp, pkg, configName, configPrefix } = await getConfigAsync(projectRoot, options);
@@ -1213,21 +1320,21 @@ export async function buildAsync(
     exp.slug = pkg.name;
   }
 
-  if (options.platform === 'ios' || options.platform === 'all') {
+  if (options.mode !== 'status' && (options.platform === 'ios' || options.platform === 'all')) {
     if (!exp.ios || !exp.ios.bundleIdentifier) {
       throw new XDLError(
         ErrorCode.INVALID_MANIFEST,
-        `Must specify a bundle identifier in order to build this experience for iOS.` +
+        `Must specify a bundle identifier in order to build this experience for iOS. ` +
           `Please specify one in ${configName} at "${configPrefix}ios.bundleIdentifier"`
       );
     }
   }
 
-  if (options.platform === 'android' || options.platform === 'all') {
+  if (options.mode !== 'status' && (options.platform === 'android' || options.platform === 'all')) {
     if (!exp.android || !exp.android.package) {
       throw new XDLError(
         ErrorCode.INVALID_MANIFEST,
-        `Must specify a java package in order to build this experience for Android.` +
+        `Must specify a java package in order to build this experience for Android. ` +
           `Please specify one in ${configName} at "${configPrefix}android.package"`
       );
     }
@@ -1239,26 +1346,37 @@ export async function buildAsync(
   });
 }
 
-async function _waitForRunningAsync(url) {
+async function _waitForRunningAsync(projectRoot, url, retries = 300) {
   try {
-    let response = await request(url);
-    // Looking for "Cached Bundles" string is hacky, but unfortunately
-    // ngrok returns a 200 when it succeeds but the port it's proxying
-    // isn't bound.
-    if (
-      response.statusCode >= 200 &&
-      response.statusCode < 300 &&
-      response.body &&
-      response.body.includes('packager-status:running')
-    ) {
+    let response = await axios.get(url, {
+      responseType: 'text',
+      proxy: false,
+    });
+    if (/packager-status:running/.test(response.data)) {
       return true;
+    } else if (retries === 0) {
+      ProjectUtils.logError(
+        projectRoot,
+        'expo',
+        `Could not get status from Metro bundler. Server response: ${response.data}`
+      );
     }
   } catch (e) {
-    // Try again after delay
+    if (retries === 0) {
+      ProjectUtils.logError(
+        projectRoot,
+        'expo',
+        `Could not get status from Metro bundler. ${e.message}`
+      );
+    }
   }
 
-  await delayAsync(100);
-  return _waitForRunningAsync(url);
+  if (retries <= 0) {
+    throw new Error('Connecting to Metro bundler failed.');
+  } else {
+    await delayAsync(100);
+    return _waitForRunningAsync(projectRoot, url, retries - 1);
+  }
 }
 
 function _stripPackagerOutputBox(output: string) {
@@ -1384,12 +1502,10 @@ export async function startReactNativeServerAsync(
   let { exp } = await ProjectUtils.readConfigJsonAsync(projectRoot);
 
   let packagerPort = await _getFreePortAsync(19001); // Create packager options
-  let nodeModulesPath = exp.nodeModulesPath
-    ? path.join(path.resolve(projectRoot, exp.nodeModulesPath), 'node_modules')
-    : path.join(projectRoot, 'node_modules');
+
   let packagerOpts = {
     port: packagerPort,
-    customLogReporterPath: path.join(nodeModulesPath, 'expo', 'tools', 'LogReporter'),
+    customLogReporterPath: ProjectUtils.resolveModule('expo/tools/LogReporter', projectRoot, exp),
     assetExts: ['ttf'],
     nonPersistent: !!options.nonPersistent,
   };
@@ -1441,12 +1557,10 @@ export async function startReactNativeServerAsync(
   if (options.reset) {
     cliOpts.push('--reset-cache');
   } // Get custom CLI path from project package.json, but fall back to node_module path
-  let defaultCliPath = path.join(
+  let defaultCliPath = ProjectUtils.resolveModule(
+    'react-native/local-cli/cli.js',
     projectRoot,
-    'node_modules',
-    'react-native',
-    'local-cli',
-    'cli.js'
+    exp
   );
   const cliPath = exp.rnCliPath || defaultCliPath;
   let nodePath;
@@ -1493,7 +1607,11 @@ export async function startReactNativeServerAsync(
   let exitPromise = new Promise((resolve, reject) => {
     packagerProcess.once('exit', async code => {
       ProjectUtils.logDebug(projectRoot, 'expo', `Metro Bundler process exited with code ${code}`);
-      reject(new Error(`Metro Bundler process exited with code ${code}`));
+      if (code) {
+        reject(new Error(`Metro Bundler process exited with code ${code}`));
+      } else {
+        resolve();
+      }
       try {
         await ProjectSettings.setPackagerInfoAsync(projectRoot, {
           packagerPort: null,
@@ -1506,19 +1624,7 @@ export async function startReactNativeServerAsync(
     urlType: 'http',
     hostType: 'localhost',
   });
-  const statusUrl = `${packagerUrl}/status`;
-  const timeoutPromise = new Promise((resolve, reject) =>
-    setTimeout(
-      () =>
-        reject(
-          new Error(
-            `Could not access packager status at ${statusUrl}. Are you sure the packager is running and reachable?`
-          )
-        ),
-      WAIT_FOR_PACKAGER_TIMEOUT
-    )
-  );
-  await Promise.race([_waitForRunningAsync(statusUrl), exitPromise, timeoutPromise]);
+  await Promise.race([_waitForRunningAsync(projectRoot, `${packagerUrl}/status`), exitPromise]);
 }
 
 // Simulate the node_modules resolution
@@ -1566,6 +1672,7 @@ let blacklistedEnvironmentVariables = new Set([
   'EXPO_ANDROID_KEYSTORE_PASSWORD',
   'EXPO_IOS_DIST_P12_PASSWORD',
   'EXPO_IOS_PUSH_P12_PASSWORD',
+  'EXPO_CLI_PASSWORD',
 ]);
 
 function shouldExposeEnvironmentVariableInManifest(key) {
@@ -1737,7 +1844,7 @@ export async function stopExpoServerAsync(projectRoot: string) {
   let packagerInfo = await ProjectSettings.readPackagerInfoAsync(projectRoot);
   if (packagerInfo && packagerInfo.expoServerPort) {
     try {
-      await request.post(`http://localhost:${packagerInfo.expoServerPort}/shutdown`);
+      await axios.post(`http://127.0.0.1:${packagerInfo.expoServerPort}/shutdown`);
     } catch (e) {}
   }
   await ProjectSettings.setPackagerInfoAsync(projectRoot, {
@@ -1954,10 +2061,9 @@ export async function setOptionsAsync(
   let schema = joi.object().keys({
     packagerPort: joi.number().integer(),
   });
-  try {
-    await joiValidateAsync(options, schema);
-  } catch (e) {
-    throw new XDLError(ErrorCode.INVALID_OPTIONS, e.toString());
+  const { error } = joi.validate(options, schema);
+  if (error) {
+    throw new XDLError(ErrorCode.INVALID_OPTIONS, error.toString());
   }
   await ProjectSettings.setPackagerInfoAsync(projectRoot, options);
 }

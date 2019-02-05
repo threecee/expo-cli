@@ -17,19 +17,13 @@ import uuid from 'uuid';
 import inquirer from 'inquirer';
 import spawnAsync from '@expo/spawn-async';
 
-import {
-  isDirectory,
-  parseSdkMajorVersion,
-  rimrafDontThrow,
-  regexFileAsync,
-} from './ExponentTools';
+import { isDirectory, regexFileAsync, rimrafDontThrow } from './ExponentTools';
 
 import * as AssetBundle from './AssetBundle';
 import * as IosPlist from './IosPlist';
 import * as IosNSBundle from './IosNSBundle';
 import * as IosWorkspace from './IosWorkspace';
 import * as AndroidShellApp from './AndroidShellApp';
-import * as OldAndroidDetach from './OldAndroidDetach';
 
 import Api from '../Api';
 import ErrorCode from '../ErrorCode';
@@ -40,7 +34,7 @@ import StandaloneBuildFlags from './StandaloneBuildFlags';
 import StandaloneContext from './StandaloneContext';
 import * as UrlUtils from '../UrlUtils';
 import * as Versions from '../Versions';
-import installPackageAsync from './installPackageAsync';
+import installPackagesAsync from './installPackagesAsync';
 import logger from './Logger';
 
 async function yesnoAsync(message) {
@@ -55,6 +49,23 @@ async function yesnoAsync(message) {
 }
 
 export async function detachAsync(projectRoot: string, options: any = {}) {
+  let originalLogger = logger.loggerObj;
+  logger.configure({
+    trace: options.verbose ? console.trace.bind(console) : () => {},
+    debug: options.verbose ? console.debug.bind(console) : () => {},
+    info: options.verbose ? console.info.bind(console) : () => {},
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+    fatal: console.error.bind(console),
+  });
+  try {
+    return await _detachAsync(projectRoot, options);
+  } finally {
+    logger.configure(originalLogger);
+  }
+}
+
+async function _detachAsync(projectRoot, options) {
   let user = await UserManager.ensureLoggedInAsync();
 
   if (!user) {
@@ -106,9 +117,10 @@ export async function detachAsync(projectRoot: string, options: any = {}) {
     throw new Error(`${configName} is missing \`sdkVersion\``);
   }
 
-  let majorSdkVersion = parseSdkMajorVersion(exp.sdkVersion);
-  if (majorSdkVersion < 16) {
-    throw new Error(`${configName} must be updated to SDK 16.0.0 or newer to be detached.`);
+  if (!Versions.gteSdkVersion(exp, '24.0.0')) {
+    throw new Error(
+      `The app must be updated to SDK 24.0.0 or newer to be compatible with this tool.`
+    );
   }
 
   const versions = await Versions.versionsAsync();
@@ -217,18 +229,7 @@ export async function detachAsync(projectRoot: string, options: any = {}) {
     let androidDirectory = path.join(expoDirectory, 'android');
     rimraf.sync(androidDirectory);
     fs.mkdirpSync(androidDirectory);
-    if (Versions.gteSdkVersion(exp, '24.0.0')) {
-      await detachAndroidAsync(context, sdkVersionConfig.androidExpoViewUrl);
-    } else {
-      await OldAndroidDetach.detachAndroidAsync(
-        projectRoot,
-        androidDirectory,
-        exp.sdkVersion,
-        experienceUrl,
-        exp,
-        sdkVersionConfig.androidExpoViewUrl
-      );
-    }
+    await detachAndroidAsync(context, sdkVersionConfig.androidExpoViewUrl);
     exp = AndroidShellApp.addDetachedConfigToExp(exp, context);
     exp.detach.androidExpoViewUrl = sdkVersionConfig.androidExpoViewUrl;
   }
@@ -239,36 +240,27 @@ export async function detachAsync(projectRoot: string, options: any = {}) {
   const config = configNamespace ? { [configNamespace]: exp } : exp;
   await fs.writeFile(configPath, JSON.stringify(config, null, 2));
 
-  let reactNativeVersion, expoReactNativeTag;
-  if (sdkVersionConfig && sdkVersionConfig.expoReactNativeTag) {
-    expoReactNativeTag = sdkVersionConfig.expoReactNativeTag;
-    reactNativeVersion = `https://github.com/expo/react-native/archive/${expoReactNativeTag}.tar.gz`;
-  } else {
-    if (process.env.EXPO_VIEW_DIR) {
-      // ignore, using test directory
-    } else {
-      throw new Error(`Expo's React Native fork does not support this SDK version.`);
-    }
-  }
-
+  const packagesToInstall = [];
   const nodeModulesPath = exp.nodeModulesPath
     ? path.resolve(projectRoot, exp.nodeModulesPath)
     : projectRoot;
-  if (reactNativeVersion && pkg.dependencies['react-native'] !== reactNativeVersion) {
-    logger.info('Installing the Expo fork of react-native...');
-    try {
-      await installPackageAsync(nodeModulesPath, 'react-native', reactNativeVersion, {
-        silent: true,
-      });
-    } catch (e) {
-      logger.warn('Unable to install the Expo fork of react-native.');
-      logger.warn(`Please install react-native@${reactNativeVersion} to complete detaching.`);
-    }
+
+  let reactNativeVersion;
+  if (sdkVersionConfig && sdkVersionConfig.expoReactNativeTag) {
+    packagesToInstall.push(
+      `react-native@https://github.com/expo/react-native/archive/${
+        sdkVersionConfig.expoReactNativeTag
+      }.tar.gz`
+    );
+  } else if (process.env.EXPO_VIEW_DIR) {
+    // ignore, using test directory
+  } else {
+    throw new Error(`Expo's React Native fork does not support this SDK version.`);
   }
 
   // Add expokitNpmPackage if it is supported. Was added before SDK 29.
   if (process.env.EXPO_VIEW_DIR) {
-    logger.info(`Installing 'expokit' package...`);
+    logger.info(`Linking 'expokit' package...`);
     await spawnAsync('yarn', ['link'], {
       cwd: path.join(process.env.EXPO_VIEW_DIR, 'expokit-npm-package'),
     });
@@ -276,22 +268,14 @@ export async function detachAsync(projectRoot: string, options: any = {}) {
       cwd: nodeModulesPath,
     });
   } else if (sdkVersionConfig.expokitNpmPackage) {
-    logger.info(`Installing 'expokit' package...`);
-    try {
-      let packageName = sdkVersionConfig.expokitNpmPackage.split('@')[0];
-      let packageVersion = sdkVersionConfig.expokitNpmPackage.split('@')[1];
-      await installPackageAsync(nodeModulesPath, packageName, packageVersion, {
-        silent: true,
-      });
-    } catch (e) {
-      logger.warn(`Unable to install ${sdkVersionConfig.expokitNpmPackage}.`);
-      logger.warn('Please install manually to complete detaching.');
-    }
+    packagesToInstall.push(sdkVersionConfig.expokitNpmPackage);
   }
 
-  logger.info(
-    'Finished detaching your project! Look in the `android` and `ios` directories for the respective native projects. Follow the ExpoKit guide at https://docs.expo.io/versions/latest/guides/expokit.html to get your project running.'
-  );
+  if (packagesToInstall.length) {
+    await installPackagesAsync(projectRoot, packagesToInstall, {
+      packageManager: options.packageManager,
+    });
+  }
   return true;
 }
 
@@ -320,7 +304,8 @@ async function detachAndroidAsync(context: StandaloneContext, expoViewUrl: strin
     await AndroidShellApp.copyInitialShellAppFilesAsync(
       path.join(process.env.EXPO_VIEW_DIR, 'android'),
       androidProjectDirectory,
-      true
+      true,
+      context.data.exp.sdkVersion
     );
   } else {
     tmpExpoDirectory = path.join(context.data.projectPath, 'temp-android-directory');
@@ -330,12 +315,13 @@ async function detachAndroidAsync(context: StandaloneContext, expoViewUrl: strin
     await AndroidShellApp.copyInitialShellAppFilesAsync(
       tmpExpoDirectory,
       androidProjectDirectory,
-      true
+      true,
+      context.data.exp.sdkVersion
     );
   }
 
   logger.info('Updating Android app...');
-  await AndroidShellApp.runShellAppModificationsAsync(context, true);
+  await AndroidShellApp.runShellAppModificationsAsync(context, context.data.exp.sdkVersion);
 
   // Clean up
   logger.info('Cleaning up Android...');
@@ -501,14 +487,9 @@ export async function prepareDetachedBuildAsync(projectDir: string, args: any) {
   if (args.platform === 'ios') {
     await prepareDetachedBuildIosAsync(projectDir, args);
   } else {
-    let { exp } = await ProjectUtils.readConfigJsonAsync(projectDir);
-    let buildConstantsFileName = Versions.gteSdkVersion(exp, '24.0.0')
-      ? 'DetachBuildConstants.java'
-      : 'ExponentBuildConstants.java';
-
     let androidProjectDirectory = path.join(projectDir, 'android');
     let expoBuildConstantsMatches = await glob(
-      androidProjectDirectory + '/**/' + buildConstantsFileName
+      androidProjectDirectory + '/**/DetachBuildConstants.java'
     );
     if (expoBuildConstantsMatches && expoBuildConstantsMatches.length) {
       let expoBuildConstants = expoBuildConstantsMatches[0];
@@ -559,6 +540,5 @@ export async function bundleAssetsAsync(projectDir: string, args: BundleAssetsAr
       }`
     );
   }
-
-  await AssetBundle.bundleAsync(manifest.bundledAssets, args.dest);
+  await AssetBundle.bundleAsync(null, manifest.bundledAssets, args.dest);
 }

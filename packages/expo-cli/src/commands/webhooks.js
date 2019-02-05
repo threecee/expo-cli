@@ -1,8 +1,7 @@
-import { URL } from 'url';
 import { Webhooks, Exp } from 'xdl';
 import chalk from 'chalk';
-import _ from 'lodash';
 import inquirer from 'inquirer';
+import validator from 'validator';
 
 import log from '../log';
 
@@ -95,17 +94,14 @@ function _sanitizeOptions(options) {
   if (!url) {
     throw new Error('You must provide --url parameter');
   } else {
-    try {
-      // eslint-disable-next-line no-new
-      new URL(url);
-    } catch (err) {
-      if (err instanceof TypeError) {
-        throw new Error(
-          'The provided webhook URL is invalid and must be an absolute URL, including a scheme.'
-        );
-      } else {
-        throw err;
-      }
+    const isValidUrl = validator.isURL(url, {
+      protocols: ['http', 'https'],
+      require_protocol: true,
+    });
+    if (!isValidUrl) {
+      throw new Error(
+        'The provided webhook URL is invalid and must be an absolute URL, including a scheme.'
+      );
     }
 
     if (secret) {
@@ -129,7 +125,7 @@ function _sanitizeEvent(event, required = false) {
     }
   }
 
-  if (!_.includes(WEBHOOK_TYPES, event)) {
+  if (!WEBHOOK_TYPES.includes(event)) {
     throw new Error(`Unsupported webhook type: ${event}`);
   }
 

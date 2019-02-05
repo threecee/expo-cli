@@ -17,6 +17,7 @@ import {
 import { renderPodfileAsync } from './IosPodsTools.js';
 import * as IosPlist from './IosPlist';
 import logger from './Logger';
+import * as ProjectUtils from '../project/ProjectUtils';
 import * as Utils from '../Utils';
 import StandaloneContext from './StandaloneContext';
 import * as Versions from '../Versions';
@@ -177,7 +178,7 @@ async function _renderPodfileFromTemplateAsync(
   let reactNativeDependencyPath;
   const detachableUniversalModules = Modules.getDetachableModulesForPlatformAndSdkVersion(
     'ios',
-    sdkVersion
+    context.data.shellAppSdkVersion || sdkVersion
   );
   if (context.type === 'user') {
     invariant(iosClientVersion, `The iOS client version must be specified`);

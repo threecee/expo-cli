@@ -216,7 +216,8 @@ function shouldShowLoadingView(manifest) {
 export async function copyInitialShellAppFilesAsync(
   androidSrcPath,
   shellPath,
-  isDetached: boolean = false
+  isDetached: boolean,
+  sdkVersion: ?string
 ) {
   if (androidSrcPath && !isDetached) {
     // check if Android template files exist
@@ -237,7 +238,11 @@ export async function copyInitialShellAppFilesAsync(
       await fs.copy(path.join(androidSrcPath, fileName), path.join(shellPath, fileName));
     } catch (e) {
       // android.iml is only available locally, not on the builders, so don't crash when this happens
-      initialCopyLogger.warn(`Warning: Could not copy ${fileName} to shell app directory.`);
+      if (e.code === 'ENOENT') {
+        // Some files are not included in all ExpoKit versions, so this error can be ignored.
+      } else {
+        throw new Error(`Could not copy ${fileName} to shell app directory: ${e.message}`);
+      }
     }
   };
 
@@ -258,6 +263,16 @@ export async function copyInitialShellAppFilesAsync(
   await copyToShellApp('debug.keystore');
   await copyToShellApp('run.sh');
   await copyToShellApp('maven'); // this is a symlink
+
+  // kernel.android.bundle isn't ever used in standalone apps (at least in kernel v32)
+  // but in order to not change behavior in older SDKs, we'll remove the file only in 32+.
+  if (parseSdkMajorVersion(sdkVersion) >= 32) {
+    try {
+      await fs.remove(path.join(shellPath, 'app/src/main/assets/kernel.android.bundle'));
+    } catch (e) {
+      // let's hope it's just not present in the shell app template
+    }
+  }
 }
 
 exports.createAndroidShellAppAsync = async function createAndroidShellAppAsync(args: any) {
@@ -331,12 +346,12 @@ exports.createAndroidShellAppAsync = async function createAndroidShellAppAsync(a
     releaseChannel
   );
 
-  await copyInitialShellAppFilesAsync(androidSrcPath, shellPath);
+  await copyInitialShellAppFilesAsync(androidSrcPath, shellPath, false, sdkVersion);
   await removeObsoleteSdks(shellPath, sdkVersion);
-  await runShellAppModificationsAsync(context);
+  await runShellAppModificationsAsync(context, sdkVersion);
 
   if (!args.skipBuild) {
-    await buildShellAppAsync(context);
+    await buildShellAppAsync(context, sdkVersion);
   }
 };
 
@@ -355,7 +370,7 @@ function shellPathForContext(context: StandaloneContext) {
 
 export async function runShellAppModificationsAsync(
   context: StandaloneContext,
-  isDetached: boolean = false
+  sdkVersion: ?string
 ) {
   const fnLogger = logger.withFields({ buildPhase: 'running shell app modifications' });
 
@@ -364,8 +379,12 @@ export async function runShellAppModificationsAsync(
   let manifest = context.config; // manifest or app.json
   let releaseChannel = context.published.releaseChannel;
 
+  const isRunningInUserContext = context.type === 'user';
+  // In SDK32 we've unified build process for shell and ejected apps
+  const isDetached = ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32 || isRunningInUserContext;
+
   if (!context.data.privateConfig) {
-    fnLogger.warn('Warning: No config file specified.');
+    fnLogger.info('No config file specified.');
   }
 
   let fullManifestUrl = url.replace('exp://', 'https://');
@@ -387,7 +406,7 @@ export async function runShellAppModificationsAsync(
   let bundleUrl: ?string = manifest.bundleUrl;
   let isFullManifest = !!bundleUrl;
   let version = manifest.version ? manifest.version : '0.0.0';
-  let backgroundImages = backgroundImagesForApp(shellPath, manifest, isDetached);
+  let backgroundImages = backgroundImagesForApp(shellPath, manifest, isRunningInUserContext);
   let splashBackgroundColor = getSplashScreenBackgroundColor(manifest);
   let updatesDisabled = manifest.updates && manifest.updates.enabled === false;
 
@@ -429,8 +448,10 @@ export async function runShellAppModificationsAsync(
     );
 
     const runShPath = path.join(shellPath, 'run.sh');
-    await regexFileAsync('host.exp.exponent/', `${javaPackage}/`, runShPath);
-    await regexFileAsync('LauncherActivity', 'MainActivity', runShPath);
+    if (await fs.pathExists(runShPath)) {
+      await regexFileAsync('host.exp.exponent/', `${javaPackage}/`, runShPath);
+      await regexFileAsync('LauncherActivity', 'MainActivity', runShPath);
+    }
   }
 
   // Package
@@ -476,8 +497,8 @@ export async function runShellAppModificationsAsync(
     path.join(shellPath, 'app', 'build.gradle')
   );
 
-  // Remove Exponent build script
-  if (!isDetached) {
+  // Remove Exponent build script, since SDK32 expoview comes precompiled
+  if (parseSdkMajorVersion(sdkVersion) < 32 && !isRunningInUserContext) {
     await regexFileAsync(
       `preBuild.dependsOn generateDynamicMacros`,
       ``,
@@ -505,7 +526,8 @@ export async function runShellAppModificationsAsync(
     `${javaPackage}.permission.C2D_MESSAGE`,
     path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
   );
-  if (!isDetached) {
+  // Since SDK32 expoview comes precompiled
+  if (parseSdkMajorVersion(sdkVersion) < 32 && !isRunningInUserContext) {
     await regexFileAsync(
       /host\.exp\.exponent\.permission\.C2D_MESSAGE/g,
       `${javaPackage}.permission.C2D_MESSAGE`,
@@ -566,7 +588,8 @@ export async function runShellAppModificationsAsync(
       )
     );
   }
-  if (isDetached) {
+  // In SDK32 this field got removed from AppConstants
+  if (parseSdkMajorVersion(sdkVersion) < 32 && isRunningInUserContext) {
     await regexFileAsync(
       'IS_DETACHED = false',
       `IS_DETACHED = true`,
@@ -739,11 +762,8 @@ export async function runShellAppModificationsAsync(
       if (s.includes('.')) {
         whitelist.push(s);
       } else {
-        permissions.forEach(identifier => {
-          if (identifier.split('.').pop() === s) {
-            whitelist.push(identifier);
-          }
-        });
+        // If shorthand form like `WRITE_CONTACTS` is provided, expand it to `android.permission.WRITE_CONTACTS`.
+        whitelist.push(`android.permission.${s}`);
       }
     });
 
@@ -754,6 +774,7 @@ export async function runShellAppModificationsAsync(
       'android.permission.CAMERA',
       'android.permission.MANAGE_DOCUMENTS',
       'android.permission.READ_CONTACTS',
+      'android.permission.WRITE_CONTACTS',
       'android.permission.READ_CALENDAR',
       'android.permission.WRITE_CALENDAR',
       'android.permission.READ_EXTERNAL_STORAGE',
@@ -854,7 +875,7 @@ export async function runShellAppModificationsAsync(
   createAndWriteIconsToPathAsync(
     context,
     path.join(shellPath, 'app', 'src', 'main', 'res'),
-    isDetached
+    isRunningInUserContext
   );
 
   // Splash Background
@@ -867,17 +888,23 @@ export async function runShellAppModificationsAsync(
       fs.removeSync(filePath);
     });
 
-    _.forEach(backgroundImages, async image => {
-      if (isDetached) {
-        // local file so just copy it
-        await fs.copy(image.url, image.path);
-      } else {
-        await saveUrlToPathAsync(image.url, image.path);
-      }
-    });
+    await Promise.all(
+      backgroundImages.map(async image => {
+        if (isRunningInUserContext) {
+          // local file so just copy it
+          await fs.copy(path.resolve(context.data.projectPath, image.url), image.path);
+        } else {
+          await saveUrlToPathAsync(image.url, image.path);
+        }
+      })
+    );
   }
 
-  await AssetBundle.bundleAsync(manifest.bundledAssets, `${shellPath}/app/src/main/assets`);
+  await AssetBundle.bundleAsync(
+    context,
+    manifest.bundledAssets,
+    `${shellPath}/app/src/main/assets`
+  );
 
   let certificateHash = '';
   let googleAndroidApiKey = '';
@@ -948,7 +975,7 @@ export async function runShellAppModificationsAsync(
     // google-services.json
     // Used for configuring FCM
     let googleServicesFileContents = manifest.android.googleServicesFile;
-    if (isDetached) {
+    if (isRunningInUserContext) {
       googleServicesFileContents = await fs.readFile(
         path.resolve(shellPath, '..', manifest.android.googleServicesFile),
         'utf8'
@@ -990,7 +1017,7 @@ export async function runShellAppModificationsAsync(
   );
 }
 
-async function buildShellAppAsync(context: StandaloneContext) {
+async function buildShellAppAsync(context: StandaloneContext, sdkVersion: string) {
   let shellPath = shellPathForContext(context);
 
   if (context.build.android) {
@@ -1000,7 +1027,15 @@ async function buildShellAppAsync(context: StandaloneContext) {
       await fs.remove(`shell-unaligned.apk`);
       await fs.remove(`shell.apk`);
     } catch (e) {}
-    const gradleArgs = [`assembleProdMinSdkProdKernelRelease`];
+    let gradleBuildCommand;
+    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 33) {
+      gradleBuildCommand = 'assembleRelease';
+    } else if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
+      gradleBuildCommand = 'assembleProdKernelRelease';
+    } else {
+      gradleBuildCommand = 'assembleProdMinSdkProdKernelRelease';
+    }
+    const gradleArgs = [gradleBuildCommand];
     if (process.env.GRADLE_DAEMON_DISABLED) {
       gradleArgs.unshift('--no-daemon');
     }
@@ -1008,49 +1043,88 @@ async function buildShellAppAsync(context: StandaloneContext) {
       pipeToLogger: true,
       loggerFields: { buildPhase: 'running gradle' },
       cwd: shellPath,
+      env: {
+        ...process.env,
+        ANDROID_KEY_ALIAS: androidBuildConfiguration.keyAlias,
+        ANDROID_KEY_PASSWORD: androidBuildConfiguration.keyPassword,
+        ANDROID_KEYSTORE_PATH: androidBuildConfiguration.keystore,
+        ANDROID_KEYSTORE_PASSWORD: androidBuildConfiguration.keystorePassword,
+      },
     });
-    await fs.copy(
-      path.join(
-        shellPath,
-        'app',
-        'build',
-        'outputs',
-        'apk',
-        'prodMinSdkProdKernel',
-        'release',
-        'app-prodMinSdk-prodKernel-release-unsigned.apk'
-      ),
-      `shell-unaligned.apk`
-    );
-    await spawnAsync(
-      `jarsigner`,
-      [
-        '-verbose',
-        '-sigalg',
-        'SHA1withRSA',
-        '-digestalg',
-        'SHA1',
-        '-storepass',
-        androidBuildConfiguration.keystorePassword,
-        '-keypass',
-        androidBuildConfiguration.keyPassword,
-        '-keystore',
-        androidBuildConfiguration.keystore,
-        'shell-unaligned.apk',
-        androidBuildConfiguration.keyAlias,
-      ],
-      {
-        pipeToLogger: true,
-        loggerFields: { buildPhase: 'signing created apk' },
+    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
+      let apkPath;
+      if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 33) {
+        apkPath = path.join(
+          shellPath,
+          'app',
+          'build',
+          'outputs',
+          'apk',
+          'release',
+          'app-release.apk'
+        );
+      } else {
+        apkPath = path.join(
+          shellPath,
+          'app',
+          'build',
+          'outputs',
+          'apk',
+          'prodKernel',
+          'release',
+          'app-prodKernel-release.apk'
+        );
       }
-    );
-    await spawnAsync(`zipalign`, ['-v', '4', 'shell-unaligned.apk', 'shell.apk'], {
-      pipeToLogger: true,
-      loggerFields: { buildPhase: 'verifying apk alignment' },
-    });
-    try {
-      await fs.remove('shell-unaligned.apk');
-    } catch (e) {}
+      await fs.copy(apkPath, 'shell.apk');
+      // -c means "only verify"
+      await spawnAsync(`zipalign`, ['-c', '-v', '4', 'shell.apk'], {
+        pipeToLogger: true,
+        loggerFields: { buildPhase: 'verifying apk alignment' },
+      });
+    } else {
+      await fs.copy(
+        path.join(
+          shellPath,
+          'app',
+          'build',
+          'outputs',
+          'apk',
+          'prodMinSdkProdKernel',
+          'release',
+          'app-prodMinSdk-prodKernel-release-unsigned.apk'
+        ),
+        `shell-unaligned.apk`
+      );
+      await spawnAsync(
+        `jarsigner`,
+        [
+          '-verbose',
+          '-sigalg',
+          'SHA1withRSA',
+          '-digestalg',
+          'SHA1',
+          '-storepass',
+          androidBuildConfiguration.keystorePassword,
+          '-keypass',
+          androidBuildConfiguration.keyPassword,
+          '-keystore',
+          androidBuildConfiguration.keystore,
+          'shell-unaligned.apk',
+          androidBuildConfiguration.keyAlias,
+        ],
+        {
+          pipeToLogger: true,
+          loggerFields: { buildPhase: 'signing created apk' },
+        }
+      );
+      await spawnAsync(`zipalign`, ['-v', '4', 'shell-unaligned.apk', 'shell.apk'], {
+        pipeToLogger: true,
+        loggerFields: { buildPhase: 'verifying apk alignment' },
+      });
+      try {
+        await fs.remove('shell-unaligned.apk');
+      } catch (e) {}
+    }
     await spawnAsync(
       `jarsigner`,
       [
@@ -1071,13 +1145,35 @@ async function buildShellAppAsync(context: StandaloneContext) {
     try {
       await fs.remove('shell-debug.apk');
     } catch (e) {}
-    await spawnAsyncThrowError(`./gradlew`, ['assembleDevMinSdkDevKernelDebug'], {
+    let gradleBuildCommand;
+    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 33) {
+      gradleBuildCommand = 'assembleDebug';
+    } else if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
+      gradleBuildCommand = 'assembleDevKernelDebug';
+    } else {
+      gradleBuildCommand = 'assembleDevMinSdkDevKernelDebug';
+    }
+    await spawnAsyncThrowError(`./gradlew`, [gradleBuildCommand], {
       pipeToLogger: true,
       loggerFields: { buildPhase: 'running gradle' },
       cwd: shellPath,
     });
-    await fs.copy(
-      path.join(
+    let apkPath;
+    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 33) {
+      apkPath = path.join(shellPath, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+    } else if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
+      apkPath = path.join(
+        shellPath,
+        'app',
+        'build',
+        'outputs',
+        'apk',
+        'devKernel',
+        'debug',
+        'app-devKernel-debug.apk'
+      );
+    } else {
+      apkPath = path.join(
         shellPath,
         'app',
         'build',
@@ -1086,9 +1182,9 @@ async function buildShellAppAsync(context: StandaloneContext) {
         'devMinSdkDevKernel',
         'debug',
         'app-devMinSdk-devKernel-debug.apk'
-      ),
-      `/tmp/shell-debug.apk`
-    );
+      );
+    }
+    await fs.copy(apkPath, `/tmp/shell-debug.apk`);
   }
 }
 
