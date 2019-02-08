@@ -301,6 +301,11 @@ const expoSdkUniversalModules = [
     sdkVersions: '>=32.0.0',
   },
   {
+    podName: 'EXHaptics',
+    libName: 'expo-haptics',
+    sdkVersions: '>=33.0.0',
+  },
+  {
     podName: 'EXImageLoaderInterface',
     libName: 'expo-image-loader-interface',
     sdkVersions: '>=30.0.0',
@@ -314,6 +319,17 @@ const expoSdkUniversalModules = [
     podName: 'EXImagePicker',
     libName: 'expo-image-picker',
     sdkVersions: '>=33.0.0',
+  },
+  {
+    libName: 'expo-intent-launcher',
+    sdkVersions: '>=33.0.0',
+    config: {
+      ios: {
+        versionable: false,
+        detachable: false,
+        includeInExpoClient: false,
+      },
+    },
   },
   {
     podName: 'EXKeepAwake',
